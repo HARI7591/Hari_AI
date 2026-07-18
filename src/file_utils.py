@@ -1,79 +1,35 @@
-"""Utility functions for file handling."""
+from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Optional
-import tempfile
-import os
 
-try:
-    from pypdf import PdfReader
-except ImportError:
-    PdfReader = None
-
-try:
-    from docx import Document
-except ImportError:
-    Document = None
-
-try:
-    import docx2txt
-except ImportError:
-    docx2txt = None
+from pypdf import PdfReader
+import docx2txt
 
 
 def read_uploaded_file(uploaded_file) -> str:
-    """
-    Read content from uploaded file (txt, pdf, or docx).
-    
-    Args:
-        uploaded_file: Streamlit uploaded file object
-        
-    Returns:
-        str: Content extracted from the file
-    """
+    """Read txt, pdf, or docx uploaded from Streamlit."""
     if uploaded_file is None:
         return ""
-    
-    file_name = uploaded_file.name.lower()
-    
-    # Handle text files
-    if file_name.endswith('.txt'):
-        return uploaded_file.read().decode('utf-8', errors='ignore')
-    
-    # Handle PDF files
-    elif file_name.endswith('.pdf'):
-        if PdfReader is None:
-            raise ImportError("pypdf is required for PDF support. Install with: pip install pypdf")
-        
-        try:
-            pdf_reader = PdfReader(uploaded_file)
-            text_content = ""
-            for page in pdf_reader.pages:
-                text_content += page.extract_text()
-            return text_content
-        except Exception as e:
-            raise ValueError(f"Error reading PDF file: {str(e)}")
-    
-    # Handle DOCX files
-    elif file_name.endswith('.docx'):
-        if Document is None:
-            raise ImportError("python-docx is required for DOCX support. Install with: pip install python-docx")
-        
-        try:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
-                tmp_file.write(uploaded_file.getbuffer())
-                tmp_path = tmp_file.name
-            
-            # Read DOCX
-            doc = Document(tmp_path)
-            text_content = "\n".join([para.text for para in doc.paragraphs])
-            
-            # Cleanup
-            os.unlink(tmp_path)
-            return text_content
-        except Exception as e:
-            raise ValueError(f"Error reading DOCX file: {str(e)}")
-    
-    else:
-        raise ValueError(f"Unsupported file format: {file_name}. Supported formats: .txt, .pdf, .docx")
+
+    suffix = Path(uploaded_file.name).suffix.lower()
+
+    if suffix == ".txt":
+        return uploaded_file.read().decode("utf-8", errors="ignore")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
+
+    if suffix == ".pdf":
+        reader = PdfReader(tmp_path)
+        text = []
+        for page in reader.pages:
+            text.append(page.extract_text() or "")
+        return "\n".join(text)
+
+    if suffix == ".docx":
+        return docx2txt.process(tmp_path)
+
+    raise ValueError("Unsupported file type. Please upload .txt, .pdf, or .docx")
