@@ -1,220 +1,132 @@
-"""RAG engine for career coach AI application."""
+from __future__ import annotations
 
 import os
+import shutil
+from pathlib import Path
 from typing import List, Tuple
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
+
+from dotenv import load_dotenv
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-import streamlit as st
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+
+load_dotenv()
+
+DB_DIR = "career_coach_chroma_db"
 
 
-def create_documents(resume_text: str, job_description_text: str) -> List[Document]:
-    """
-    Create LangChain Document objects from resume and job description.
-    
-    Args:
-        resume_text: Content of the resume
-        job_description_text: Content of the job description
-        
-    Returns:
-        List[Document]: List of Document objects
-    """
-    documents = [
-        Document(
-            page_content=resume_text,
-            metadata={"source": "resume", "type": "resume"}
-        ),
-        Document(
-            page_content=job_description_text,
-            metadata={"source": "job_description", "type": "job_description"}
-        )
+def get_llm(model: str = "llama-3.1-8b-instant", temperature: float = 0.2):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY not found. Create a .env file and add your Groq API key.")
+    return ChatGroq(model=model, temperature=temperature)
+
+
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+
+# -----------------------------
+# Stage 1: Load Documents
+# -----------------------------
+def load_text_file(file_path: str, source_name: str, doc_type: str) -> List[Document]:
+    path = Path(file_path)
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    return [Document(page_content=text, metadata={"source": source_name, "doc_type": doc_type})]
+
+
+def create_documents(resume_text: str, jd_text: str) -> List[Document]:
+    return [
+        Document(page_content=resume_text, metadata={"source": "uploaded_resume", "doc_type": "resume"}),
+        Document(page_content=jd_text, metadata={"source": "uploaded_job_description", "doc_type": "job_description"}),
     ]
-    return documents
 
 
-def split_documents(
-    documents: List[Document],
-    chunk_size: int = 800,
-    chunk_overlap: int = 150
-) -> List[Document]:
-    """
-    Split documents into smaller chunks for embedding.
-    
-    Args:
-        documents: List of Document objects
-        chunk_size: Size of each chunk
-        chunk_overlap: Overlap between chunks
-        
-    Returns:
-        List[Document]: List of chunked documents
-    """
+# -----------------------------
+# Stage 2: Split Documents
+# -----------------------------
+def split_documents(docs: List[Document], chunk_size: int = 800, chunk_overlap: int = 150) -> List[Document]:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""]
+        separators=["\n\n", "\n", ".", " ", ""],
     )
-    
-    chunks = []
-    for doc in documents:
-        split_docs = splitter.split_documents([doc])
-        chunks.extend(split_docs)
-    
-    return chunks
+    return splitter.split_documents(docs)
 
 
-def build_vectorstore(chunks: List[Document]) -> Chroma:
-    """
-    Build a Chroma vector store from document chunks.
-    
-    Args:
-        chunks: List of chunked documents
-        
-    Returns:
-        Chroma: Vector store instance
-    """
-    # Initialize HuggingFace embeddings
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
-    
-    # Create Chroma vector store
+# -----------------------------
+# Stage 3 + 4: Embeddings + Vector DB
+# -----------------------------
+def build_vectorstore(chunks: List[Document], persist_directory: str = DB_DIR):
+    if Path(persist_directory).exists():
+        shutil.rmtree(persist_directory)
+
     vectorstore = Chroma.from_documents(
         documents=chunks,
-        embedding=embeddings
+        embedding=get_embeddings(),
+        persist_directory=persist_directory,
+        collection_name="career_coach_rag",
     )
-    
     return vectorstore
 
 
-def run_career_coach(
-    vectorstore: Chroma,
-    resume_text: str,
-    job_description_text: str,
-    question: str
-) -> Tuple[str, List[Document]]:
+# -----------------------------
+# Stage 5: Retrieve Context
+# -----------------------------
+def retrieve_context(vectorstore, query: str, k: int = 5) -> Tuple[str, List[Document]]:
+    retriever = vectorstore.as_retriever(search_kwargs={"k": k})
+    docs = retriever.invoke(query)
+    context = "\n\n".join([f"SOURCE: {d.metadata}\nCONTENT:\n{d.page_content}" for d in docs])
+    return context, docs
+
+
+# -----------------------------
+# Stage 6: Generate Answer
+# -----------------------------
+def run_career_coach(vectorstore, resume_text: str, jd_text: str, question: str):
+    llm = get_llm()
+
+    retrieval_query = f"""
+    Resume content and job description content relevant to this career coaching question:
+    {question}
     """
-    Run the career coach RAG pipeline.
-    
-    Args:
-        vectorstore: Chroma vector store
-        resume_text: Resume content
-        job_description_text: Job description content
-        question: User's question
-        
-    Returns:
-        Tuple[str, List[Document]]: Generated answer and source documents
-    """
-    # Initialize LLM
-    llm = ChatGroq(
-        model_name="mixtral-8x7b-32768",
-        temperature=0.7,
-        groq_api_key=os.getenv("GROQ_API_KEY")
-    )
-    
-    # Retrieve relevant context
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
-    relevant_docs = retriever.invoke(question)
-    
-    # Create prompt template
-    prompt_template = PromptTemplate(
-        input_variables=["context", "question", "resume", "job_description"],
-        template="""You are an expert career coach. Based on the provided context from the resume and job description, answer the following question.
 
-Resume:
-{resume}
+    context, source_docs = retrieve_context(vectorstore, retrieval_query, k=6)
 
-Job Description:
-{job_description}
+    prompt = ChatPromptTemplate.from_template("""
+You are an expert AI Career Coach for students, freshers and working professionals.
+Use ONLY the given context from the resume and job description.
+Do not invent skills, experience or job requirements.
 
-Retrieved Context:
+CONTEXT:
 {context}
 
-Question: {question}
+USER QUESTION:
+{question}
 
-Provide a detailed, actionable answer:"""
-    )
-    
-    # Prepare context
-    context_text = "\n".join([doc.page_content for doc in relevant_docs])
-    
-    # Generate answer
-    answer = llm.invoke(
-        prompt_template.format(
-            context=context_text,
-            question=question,
-            resume=resume_text[:2000],
-            job_description=job_description_text[:2000]
-        )
-    ).content
-    
-    return answer, relevant_docs
-
-
-def generate_complete_report(
-    vectorstore: Chroma,
-    resume_text: str,
-    job_description_text: str
-) -> Tuple[str, List[Document]]:
-    """
-    Generate a complete career analysis report.
-    
-    Args:
-        vectorstore: Chroma vector store
-        resume_text: Resume content
-        job_description_text: Job description content
-        
-    Returns:
-        Tuple[str, List[Document]]: Generated report and source documents
-    """
-    # Initialize LLM
-    llm = ChatGroq(
-        model_name="mixtral-8x7b-32768",
-        temperature=0.7,
-        groq_api_key=os.getenv("GROQ_API_KEY")
-    )
-    
-    # Retrieve relevant context
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
-    relevant_docs = retriever.invoke("resume job match skills gaps recommendations")
-    
-    # Create prompt template for complete report
-    prompt_template = PromptTemplate(
-        input_variables=["context", "resume", "job_description"],
-        template="""You are an expert career coach. Analyze the resume against the job description and provide a comprehensive report.
-
-Resume:
-{resume}
-
-Job Description:
-{job_description}
-
-Retrieved Context:
-{context}
-
-Generate a detailed career analysis report including:
-1. Resume-Job Match Score (1-10)
-2. Key Matching Skills
-3. Missing/Gap Skills
-4. Resume Improvement Suggestions
-5. Recommended Projects to Learn Missing Skills
+Give a clear, practical answer with these sections when relevant:
+1. Current Match Summary
+2. Strengths
+3. Missing Skills / Gaps
+4. Recommended Improvements
+5. Suggested Projects
 6. Interview Preparation Tips
-7. Overall Recommendation"""
-    )
-    
-    # Prepare context
-    context_text = "\n".join([doc.page_content for doc in relevant_docs])
-    
-    # Generate report
-    report = llm.invoke(
-        prompt_template.format(
-            context=context_text,
-            resume=resume_text[:3000],
-            job_description=job_description_text[:3000]
-        )
-    ).content
-    
-    return report, relevant_docs
+
+Keep the answer simple, actionable and beginner-friendly.
+""")
+
+    chain = prompt | llm | StrOutputParser()
+    answer = chain.invoke({"context": context, "question": question})
+    return answer, source_docs
+
+
+def generate_complete_report(vectorstore, resume_text: str, jd_text: str):
+    question = """
+    Analyze this resume against this job description. Provide ATS-style score, skill match, missing skills,
+    resume improvement suggestions, project suggestions, and interview questions.
+    """
+    return run_career_coach(vectorstore, resume_text, jd_text, question)
