@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import streamlit as st
 
+from dotenv import load_dotenv
 from src.file_utils import read_uploaded_file
 from src.rag_engine import (
     create_documents,
@@ -11,8 +13,11 @@ from src.rag_engine import (
     generate_complete_report,
 )
 
+# Load environment variables
+load_dotenv()
+
 st.set_page_config(
-    page_title="Hari Ai job search bot - RAG Project",
+    page_title="Hari AI Career Coach - RAG Project",
     page_icon="🎯",
     layout="wide",
 )
@@ -29,11 +34,17 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown('<div class="main-title">🎯 Hari AI using Traditional RAG</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🎯 Hari AI Career Coach - Traditional RAG</div>', unsafe_allow_html=True)
 st.markdown(
     '<div class="subtitle">Resume + Job Description → RAG Pipeline → Skill Gap Analysis, Resume Suggestions & Interview Prep</div>',
     unsafe_allow_html=True,
 )
+
+# Check if API key is configured
+if not os.getenv("GROQ_API_KEY"):
+    st.error("❌ GROQ_API_KEY not configured. Please add it to your Streamlit secrets.")
+    st.info("To fix: Go to Streamlit Settings → Secrets → Add GROQ_API_KEY=your_key")
+    st.stop()
 
 with st.sidebar:
     st.header("⚙️ RAG Settings")
@@ -74,19 +85,23 @@ if st.button("🚀 Build Career Coach RAG Index", type="primary"):
     if not resume_text.strip() or not jd_text.strip():
         st.error("Please upload or paste both Resume and Job Description.")
     else:
-        with st.spinner("Running RAG stages: loading → chunking → embeddings → vector database..."):
-            docs = create_documents(resume_text, jd_text)
-            chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-            vectorstore = build_vectorstore(chunks)
+        try:
+            with st.spinner("Running RAG stages: loading → chunking → embeddings → vector database..."):
+                docs = create_documents(resume_text, jd_text)
+                chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+                vectorstore = build_vectorstore(chunks)
 
-            st.session_state.vectorstore = vectorstore
-            st.session_state.chunks = chunks
+                st.session_state.vectorstore = vectorstore
+                st.session_state.chunks = chunks
 
-        st.success("RAG index created successfully!")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Documents", "2")
-        c2.metric("Chunks", len(st.session_state.chunks))
-        c3.metric("Vector DB", "ChromaDB")
+            st.success("✅ RAG index created successfully!")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Documents", "2")
+            c2.metric("Chunks", len(st.session_state.chunks))
+            c3.metric("Vector DB", "ChromaDB")
+        except Exception as e:
+            st.error(f"❌ Error building RAG index: {str(e)}")
+            st.info("Make sure all dependencies are installed and GROQ_API_KEY is valid.")
 
 if st.session_state.vectorstore:
     st.markdown("### ✅ Ask Career Questions")
@@ -104,37 +119,43 @@ if st.session_state.vectorstore:
     final_question = custom_question if custom_question else selected
 
     if st.button("🤖 Get Career Coach Answer"):
-        with st.spinner("Retrieving context and generating answer..."):
-            answer, sources = run_career_coach(
-                st.session_state.vectorstore,
-                resume_text,
-                jd_text,
-                final_question,
-            )
+        try:
+            with st.spinner("Retrieving context and generating answer..."):
+                answer, sources = run_career_coach(
+                    st.session_state.vectorstore,
+                    resume_text,
+                    jd_text,
+                    final_question,
+                )
 
-        st.markdown("## 🎯 Career Coach Response")
-        st.write(answer)
+            st.markdown("## 🎯 Career Coach Response")
+            st.write(answer)
 
-        with st.expander("🔍 Retrieved Context Used by RAG"):
-            for i, doc in enumerate(sources, 1):
-                st.markdown(f"#### Source Chunk {i}")
-                st.caption(str(doc.metadata))
-                st.write(doc.page_content[:1200])
+            with st.expander("🔍 Retrieved Context Used by RAG"):
+                for i, doc in enumerate(sources, 1):
+                    st.markdown(f"#### Source Chunk {i}")
+                    st.caption(str(doc.metadata))
+                    st.write(doc.page_content[:1200])
+        except Exception as e:
+            st.error(f"❌ Error generating answer: {str(e)}")
 
     st.divider()
 
     if st.button("📊 Generate Complete Career Report"):
-        with st.spinner("Generating complete RAG-based career report..."):
-            report, sources = generate_complete_report(
-                st.session_state.vectorstore,
-                resume_text,
-                jd_text,
-            )
-        st.markdown("## 📊 Complete Career Report")
-        st.write(report)
+        try:
+            with st.spinner("Generating complete RAG-based career report..."):
+                report, sources = generate_complete_report(
+                    st.session_state.vectorstore,
+                    resume_text,
+                    jd_text,
+                )
+            st.markdown("## 📊 Complete Career Report")
+            st.write(report)
+        except Exception as e:
+            st.error(f"❌ Error generating report: {str(e)}")
 
 else:
-    st.info("Upload/paste Resume and Job Description, then click 'Build Career Coach RAG Index'.")
+    st.info("📋 Upload/paste Resume and Job Description, then click 'Build Career Coach RAG Index'.")
 
 st.divider()
 st.markdown("### 🧠 How this Traditional RAG Project Works")
